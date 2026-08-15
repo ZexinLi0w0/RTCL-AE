@@ -1,0 +1,10 @@
+method,benchmark,timeslice_s,train_samples,wallclock_sec,qps,streaming_accuracy,return_code,log_file
+vanilla,core50_nic,-,119894,6905,17.4,0.4326,0,ae_logs/fig2b/vanilla_core50_nic.log
+da,core50_nic,0.001,119894,5527,21.7,0.4353,0,ae_logs/fig2b/da_ts0.001_core50_nic.log
+da,core50_nic,0.01,119894,4179,28.7,0.463,0,ae_logs/fig2b/da_ts0.01_core50_nic.log
+da,core50_nic,0.1,119894,2366,50.7,0.4402,0,ae_logs/fig2b/da_ts0.1_core50_nic.log
+da,core50_nic,1.0,119894,1740,68.9,0.4478,0,ae_logs/fig2b/da_ts1.0_core50_nic.log
+fp,core50_nic,0.001,119894,932,128.6,0.4242,0,ae_logs/fig2b/fp_ts0.001_core50_nic.log
+fp,core50_nic,0.01,119894,924,129.8,0.4412,0,ae_logs/fig2b/fp_ts0.01_core50_nic.log
+fp,core50_nic,0.1,119894,977,122.7,0.4714,0,ae_logs/fig2b/fp_ts0.1_core50_nic.log
+fp,core50_nic,1.0,119894,923,129.9,0.4469,0,ae_logs/fig2b/fp_ts1.0_core50_nic.log

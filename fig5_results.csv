@@ -1,0 +1,25 @@
+method,benchmark,model,entry_point,scheduler_mode,algorithm,train_samples,wallclock_sec,qps,streaming_accuracy,return_code,log_file,note
+Avalanche (sequential),split_cifar10,resnet50,test_avalanche_lib.py,-,replay,50000,10,,,2,ae_logs_fig5/vanilla_resnet50.log,Avalanche baseline unsupported on this branch (test_avalanche_lib.py builds CIFAR ResNets by depth)
+Default Alternation (DA),split_cifar10,resnet50,main.py,default,replay,50000,2016,24.8,0.3297,0,ae_logs_fig5/da_resnet50.log,
+Ekya,split_cifar10,resnet50,main.py,ekya,replay,50000,1698,29.4,0.3198,0,ae_logs_fig5/ekya_resnet50.log,
+RECL,split_cifar10,resnet50,main.py,recl_sched,replay,50000,1640,30.5,0.3639,0,ae_logs_fig5/recl_resnet50.log,
+AOCL_basic (fully parallel),split_cifar10,resnet50,main.py,fully_parallel,replay,50000,3078,16.2,0.3348,0,ae_logs_fig5/fp_resnet50.log,
+AOCL (ours),split_cifar10,resnet50,main.py,adaptocl,replay,50000,1184,42.2,0.3053,0,ae_logs_fig5/ours_resnet50.log,
+Avalanche (sequential),split_cifar10,resnet101,test_avalanche_lib.py,-,replay,50000,9,,,2,ae_logs_fig5/vanilla_resnet101.log,Avalanche baseline unsupported on this branch (test_avalanche_lib.py builds CIFAR ResNets by depth)
+Default Alternation (DA),split_cifar10,resnet101,main.py,default,replay,50000,2612,19.1,0.3677,0,ae_logs_fig5/da_resnet101.log,
+Ekya,split_cifar10,resnet101,main.py,ekya,replay,50000,2538,19.7,0.2101,0,ae_logs_fig5/ekya_resnet101.log,
+RECL,split_cifar10,resnet101,main.py,recl_sched,replay,50000,2418,20.7,0.2173,0,ae_logs_fig5/recl_resnet101.log,
+AOCL_basic (fully parallel),split_cifar10,resnet101,main.py,fully_parallel,replay,50000,2537,19.7,0.2416,0,ae_logs_fig5/fp_resnet101.log,
+AOCL (ours),split_cifar10,resnet101,main.py,adaptocl,replay,50000,1771,28.2,0.1942,0,ae_logs_fig5/ours_resnet101.log,
+Avalanche (sequential),split_cifar10,mobilenetv1,test_avalanche_lib.py,-,replay,50000,8,,,2,ae_logs_fig5/vanilla_mobilenetv1.log,Avalanche baseline unsupported on this branch (test_avalanche_lib.py builds CIFAR ResNets by depth)
+Default Alternation (DA),split_cifar10,mobilenetv1,main.py,default,replay,50000,930,53.8,0.5252,0,ae_logs_fig5/da_mobilenetv1.log,
+Ekya,split_cifar10,mobilenetv1,main.py,ekya,replay,50000,925,54.1,0.6073,0,ae_logs_fig5/ekya_mobilenetv1.log,
+RECL,split_cifar10,mobilenetv1,main.py,recl_sched,replay,50000,856,58.4,0.5885,0,ae_logs_fig5/recl_mobilenetv1.log,
+AOCL_basic (fully parallel),split_cifar10,mobilenetv1,main.py,fully_parallel,replay,50000,930,53.8,0.5812,0,ae_logs_fig5/fp_mobilenetv1.log,
+AOCL (ours),split_cifar10,mobilenetv1,main.py,adaptocl,replay,50000,645,77.5,0.5854,0,ae_logs_fig5/ours_mobilenetv1.log,
+Avalanche (sequential),split_cifar10,vit_tiny,test_avalanche_lib.py,-,replay,50000,9,,,2,ae_logs_fig5/vanilla_vit_tiny.log,Avalanche baseline unsupported on this branch (test_avalanche_lib.py builds CIFAR ResNets by depth)
+Default Alternation (DA),split_cifar10,vit_tiny,main.py,default,replay,50000,1116,44.8,0.1937,0,ae_logs_fig5/da_vit_tiny.log,
+Ekya,split_cifar10,vit_tiny,main.py,ekya,replay,50000,1019,49.1,0.1960,0,ae_logs_fig5/ekya_vit_tiny.log,
+RECL,split_cifar10,vit_tiny,main.py,recl_sched,replay,50000,974,51.3,0.1658,0,ae_logs_fig5/recl_vit_tiny.log,
+AOCL_basic (fully parallel),split_cifar10,vit_tiny,main.py,fully_parallel,replay,50000,1019,49.1,0.1785,0,ae_logs_fig5/fp_vit_tiny.log,
+AOCL (ours),split_cifar10,vit_tiny,main.py,adaptocl,replay,50000,721,69.3,0.1594,0,ae_logs_fig5/ours_vit_tiny.log,

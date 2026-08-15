@@ -1,0 +1,5 @@
+mode,samples,mean_gr3d_pct,run_wallclock_sec
+vanilla,1288,31.87,1297
+da,1277,28.36,1286
+fp,640,40.95,645
+ours,564,35.01,568

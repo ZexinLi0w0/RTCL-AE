@@ -1,0 +1,13 @@
+method,benchmark,timeslice_s,train_samples,wallclock_sec,qps,streaming_accuracy,return_code,log_file
+da,split_cifar10,0.1,50000,695,71.9,0.3619,0,ae_logs/fig2a/da_split_cifar10.log
+fp,split_cifar10,0.1,50000,270,185.2,0.4821,0,ae_logs/fig2a/fp_split_cifar10.log
+ta,split_cifar10,0.1,50000,255,196.1,0.4919,0,ae_logs/fig2a/ta_split_cifar10.log
+aa,split_cifar10,0.1,50000,252,198.4,0.4695,0,ae_logs/fig2a/aa_split_cifar10.log
+da,core50_nc,0.1,119894,1686,71.1,0.4361,0,ae_logs/fig2a/da_core50_nc.log
+fp,core50_nc,0.1,119894,631,190.0,0.4627,0,ae_logs/fig2a/fp_core50_nc.log
+ta,core50_nc,0.1,119894,652,183.9,0.4492,0,ae_logs/fig2a/ta_core50_nc.log
+aa,core50_nc,0.1,119894,645,185.9,0.4256,0,ae_logs/fig2a/aa_core50_nc.log
+da,core50_nic,0.1,119894,2349,51.0,0.4485,0,ae_logs/fig2a/da_core50_nic.log
+fp,core50_nic,0.1,119894,878,136.6,0.452,0,ae_logs/fig2a/fp_core50_nic.log
+ta,core50_nic,0.1,119894,937,128.0,0.4315,0,ae_logs/fig2a/ta_core50_nic.log
+aa,core50_nic,0.1,119894,932,128.6,0.4327,0,ae_logs/fig2a/aa_core50_nic.log

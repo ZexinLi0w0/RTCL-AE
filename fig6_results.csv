@@ -1,0 +1,31 @@
+method,benchmark,entry_point,scheduler_mode,algorithm,train_samples,wallclock_sec,qps,speedup_vs_avalanche,streaming_accuracy,return_code,log_file,note
+Avalanche (sequential),split_cifar10,test_avalanche_lib.py,-,replay,50000,377,132.6,1.0,0.4634,0,vanilla_split_cifar10.log,
+Default Alternation (DA),split_cifar10,main.py,default,replay,50000,496,100.8,0.76,0.4736,0,da_split_cifar10.log,
+Ekya,split_cifar10,main.py,ekya,replay,50000,230,217.4,1.64,0.339,0,ekya_split_cifar10.log,
+RECL,split_cifar10,main.py,recl_sched,replay,50000,418,119.6,0.9,0.4356,0,recl_split_cifar10.log,
+AOCL_basic (fully parallel),split_cifar10,main.py,fully_parallel,replay,50000,253,197.6,1.49,0.48,0,fp_split_cifar10.log,
+AOCL (ours),split_cifar10,main.py,adaptocl,replay,50000,189,264.6,1.99,0.4024,0,ours_split_cifar10.log,
+Avalanche (sequential),split_cifar100,test_avalanche_lib.py,-,replay,5000,61,82.0,1.0,0.232,0,vanilla_split_cifar100.log,"only first 10 classes (fixed_class_order=range(10)); ~60s run, throughput noisy"
+Default Alternation (DA),split_cifar100,main.py,default,replay,5000,83,60.2,0.73,0.233,0,da_split_cifar100.log,"only first 10 classes (fixed_class_order=range(10)); ~60s run, throughput noisy"
+Ekya,split_cifar100,main.py,ekya,replay,5000,57,87.7,1.07,0.24,0,ekya_split_cifar100.log,"only first 10 classes (fixed_class_order=range(10)); ~60s run, throughput noisy"
+RECL,split_cifar100,main.py,recl_sched,replay,5000,105,47.6,0.58,0.1,0,recl_split_cifar100.log,"RECL degenerate on SplitCIFAR100 (SA~chance) - expected baseline failure per instructions | only first 10 classes (fixed_class_order=range(10)); ~60s run, throughput noisy"
+AOCL_basic (fully parallel),split_cifar100,main.py,fully_parallel,replay,5000,57,87.7,1.07,0.256,0,fp_split_cifar100.log,"only first 10 classes (fixed_class_order=range(10)); ~60s run, throughput noisy"
+AOCL (ours),split_cifar100,main.py,adaptocl,replay,5000,63,79.4,0.97,0.186,0,ours_split_cifar100.log,"only first 10 classes (fixed_class_order=range(10)); ~60s run, throughput noisy"
+Avalanche (sequential),core50_ni,test_avalanche_lib.py,-,replay,119894,1128,106.3,1.0,0.4263,0,vanilla_core50_ni.log,
+Default Alternation (DA),core50_ni,main.py,default,replay,119894,1245,96.3,0.91,0.4594,0,da_core50_ni.log,
+Ekya,core50_ni,main.py,ekya,replay,119894,617,194.3,1.83,0.4609,0,ekya_core50_ni.log,
+RECL,core50_ni,main.py,recl_sched,replay,119894,1031,116.3,1.09,0.3833,0,recl_core50_ni.log,
+AOCL_basic (fully parallel),core50_ni,main.py,fully_parallel,replay,119894,608,197.2,1.86,0.4082,0,fp_core50_ni.log,
+AOCL (ours),core50_ni,main.py,adaptocl,replay,119894,572,209.6,1.97,0.3992,0,ours_core50_ni.log,
+Avalanche (sequential),core50_nc,test_avalanche_lib.py,-,replay,119894,1221,98.2,1.0,0.4736,0,vanilla_core50_nc.log,
+Default Alternation (DA),core50_nc,main.py,default,replay,119894,1265,94.8,0.97,0.447,0,da_core50_nc.log,
+Ekya,core50_nc,main.py,ekya,replay,119894,645,185.9,1.89,0.4686,0,ekya_core50_nc.log,
+RECL,core50_nc,main.py,recl_sched,replay,119894,996,120.4,1.23,0.4182,0,recl_core50_nc.log,
+AOCL_basic (fully parallel),core50_nc,main.py,fully_parallel,replay,119894,581,206.4,2.1,0.4551,0,fp_core50_nc.log,
+AOCL (ours),core50_nc,main.py,adaptocl,replay,119894,560,214.1,2.18,0.4309,0,ours_core50_nc.log,
+Avalanche (sequential),core50_nic,test_avalanche_lib.py,-,replay,119894,6767,17.7,1.0,0.4326,0,vanilla_core50_nic.log,
+Default Alternation (DA),core50_nic,main.py,default,replay,119894,1842,65.1,3.67,0.4023,0,da_core50_nic.log,
+Ekya,core50_nic,main.py,ekya,replay,119894,938,127.8,7.21,0.4389,0,ekya_core50_nic.log,
+RECL,core50_nic,main.py,recl_sched,replay,119894,1496,80.1,4.52,0.4505,0,recl_core50_nic.log,
+AOCL_basic (fully parallel),core50_nic,main.py,fully_parallel,replay,119894,916,130.9,7.39,0.4336,0,fp_core50_nic.log,
+AOCL (ours),core50_nic,main.py,adaptocl,replay,119894,844,142.1,8.02,0.4137,0,ours_core50_nic.log,

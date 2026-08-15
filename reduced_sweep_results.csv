@@ -1,0 +1,8 @@
+method,benchmark,entry_point,scheduler_mode,algorithm,wallclock_sec,throughput_speedup_vs_avalanche,streaming_accuracy,log_file,notes
+Avalanche (sequential),split_cifar10,test_avalanche_lib.py,-,replay,291,1.0,0.4634,avalanche_cifar10.log,
+Avalanche (sequential),core50_nic,test_avalanche_lib.py,-,replay,6538,1.0,0.4326,avalanche_core50nic.log,
+AOCL_basic,split_cifar10,main.py,fully_parallel,replay,159,1.83,0.3832,fp_cifar10.log,
+AOCL_basic,core50_nic,main.py,fully_parallel,replay,867,7.54,0.4671,fp_core50nic.log,
+AOCL (ours),split_cifar10,main.py,adaptocl,replay,132,2.2,0.1208,aocl_cifar10.log,first run; low final-snapshot SA (see rerun)
+AOCL (ours),core50_nic,main.py,adaptocl,replay,650,10.06,0.3936,aocl_core50nic.log,
+"AOCL (ours, rerun)",split_cifar10,main.py,adaptocl,replay,151,1.93,0.4426,aocl_cifar10_rerun.log,variance re-check

@@ -1,0 +1,26 @@
+method,benchmark,samples,p50_ms,p90_ms,p99_ms,p99_9_ms,mean_ms,max_ms
+Default Alternation (DA),split_cifar10,1330,7.0,7.0,12.0,1009.671,12.655,1010.0
+Default Alternation (DA),split_cifar100,50,7.0,9.1,128.28,228.828,12.12,240.0
+Default Alternation (DA),core50_ni,2820,7.0,7.0,10.0,1010.0,13.575,1010.0
+Default Alternation (DA),core50_nc,2820,7.0,7.0,11.0,1009.181,14.991,1011.0
+Default Alternation (DA),core50_nic,4512,7.0,7.0,10.0,1009.489,12.021,1012.0
+Ekya,split_cifar10,840,7.0,11.0,13.0,62.885,8.792,302.0
+Ekya,split_cifar100,30,8.5,12.0,212.22,285.822,18.5,294.0
+Ekya,core50_ni,2256,7.0,12.0,13.0,16.0,8.663,225.0
+Ekya,core50_nc,2256,7.0,12.0,13.0,17.745,8.488,271.0
+Ekya,core50_nic,3948,7.0,11.0,13.0,17.0,8.048,277.0
+RECL,split_cifar10,630,7.0,7.0,13.13,92.426,7.433,222.0
+RECL,split_cifar100,60,7.0,8.5,113.81,241.781,11.817,256.0
+RECL,core50_ni,1974,7.0,7.0,7.0,15.27,7.137,213.0
+RECL,core50_nc,1692,7.0,7.0,7.0,17.708,7.158,220.0
+RECL,core50_nic,2820,7.0,7.0,7.0,15.086,7.105,216.0
+AOCL_basic (fully parallel),split_cifar10,980,7.0,10.0,13.0,21.473,8.158,230.0
+AOCL_basic (fully parallel),split_cifar100,30,7.5,11.1,208.96,280.996,17.967,289.0
+AOCL_basic (fully parallel),core50_ni,2256,7.0,12.0,13.0,16.745,8.418,263.0
+AOCL_basic (fully parallel),core50_nc,1974,7.0,11.0,12.0,13.378,8.409,221.0
+AOCL_basic (fully parallel),core50_nic,3948,7.0,11.0,13.0,17.0,8.034,234.0
+AOCL (ours),split_cifar10,350,7.0,12.0,16.0,170.985,9.351,253.0
+AOCL (ours),split_cifar100,30,7.0,12.1,201.15,270.315,17.333,278.0
+AOCL (ours),core50_ni,1128,7.0,12.0,17.0,1514.619,14.052,2268.0
+AOCL (ours),core50_nc,1128,7.0,12.0,18.0,1454.246,14.66,1519.0
+AOCL (ours),core50_nic,1128,7.0,12.0,18.0,4385.855,27.645,6025.0

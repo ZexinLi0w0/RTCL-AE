@@ -1,0 +1,3 @@
+#!/bin/sh
+python main.py --benchmark "soft_robot" --dataset_root "/experiment/.avalanche/data/soft_robot_data_raw/" --scenario_soft_robot "il" --algorithm "replay" --global_scheduler_mode "ekya" --training_bs 16 --eval_bs 16
+python main.py --benchmark "soft_robot" --dataset_root "/experiment/.avalanche/data/soft_robot_data_raw/" --scenario_soft_robot "ic" --algorithm "replay" --global_scheduler_mode "ekya" --training_bs 16 --eval_bs 16
