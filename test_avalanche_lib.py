@@ -6,6 +6,7 @@ from torch.optim import Adam, SGD
 from avalanche.benchmarks.classic import EndlessCLSim, PermutedMNIST, SplitCIFAR10, SplitCIFAR100, SplitMNIST, SplitFMNIST, SplitCUB200, CORe50
 from avalanche.training import Naive, Replay, EWC, GEM, AGEM, GSS_greedy, MIR, SCR, AR1
 from avalanche.training.plugins import ReplayPlugin, EvaluationPlugin, GEMPlugin, EWCPlugin
+import src.utils.avalanche_compat  # noqa: F401  (silences Avalanche's deprecated ReplayPlugin.update path)
 from avalanche.evaluation.metrics import (
     forgetting_metrics,
     accuracy_metrics,
@@ -229,9 +230,9 @@ if __name__ == "__main__":
     # Continual learning strategy
     if args.algorithm == "naive":
         cl_strategy = Naive(
-            model,
-            optimizer,
-            criterion,
+            model=model,
+            optimizer=optimizer,
+            criterion=criterion,
             train_mb_size=args.training_bs,
             train_epochs=args.epoch,
             eval_mb_size=args.eval_bs,
@@ -240,9 +241,9 @@ if __name__ == "__main__":
         )
     elif args.algorithm == "replay":
         cl_strategy = Replay(
-            model,
-            optimizer,
-            criterion,
+            model=model,
+            optimizer=optimizer,
+            criterion=criterion,
             train_mb_size=args.training_bs,
             train_epochs=args.epoch,
             eval_mb_size=args.eval_bs,
@@ -253,9 +254,9 @@ if __name__ == "__main__":
         )
     elif args.algorithm == "gem":
         cl_strategy = GEM(
-            model,
-            optimizer,
-            criterion,
+            model=model,
+            optimizer=optimizer,
+            criterion=criterion,
             train_mb_size=args.training_bs,
             train_epochs=args.epoch,
             eval_mb_size=args.eval_bs,
@@ -266,9 +267,9 @@ if __name__ == "__main__":
         )
     elif args.algorithm == "ewc":
         cl_strategy = EWC(
-            model,
-            optimizer,
-            criterion,
+            model=model,
+            optimizer=optimizer,
+            criterion=criterion,
             train_mb_size=args.training_bs,
             train_epochs=args.epoch,
             eval_mb_size=args.eval_bs,
@@ -279,9 +280,9 @@ if __name__ == "__main__":
         )
     elif args.algorithm == "gss_greedy":
         cl_strategy = GSS_greedy(
-            model,
-            optimizer,
-            criterion,
+            model=model,
+            optimizer=optimizer,
+            criterion=criterion,
             train_mb_size=args.training_bs,
             train_epochs=args.epoch,
             eval_mb_size=args.eval_bs,
@@ -294,9 +295,9 @@ if __name__ == "__main__":
         )
     elif args.algorithm == "agem":
         cl_strategy = AGEM(
-            model,
-            optimizer,
-            criterion,
+            model=model,
+            optimizer=optimizer,
+            criterion=criterion,
             train_mb_size=args.training_bs,
             train_epochs=args.epoch,
             eval_mb_size=args.eval_bs,

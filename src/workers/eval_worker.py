@@ -217,7 +217,7 @@ def eval_worker(args, device, scheduler, lock, model_path, shared_data, config_c
                         continue
                 else:
                     with lock:
-                        checkpoint = torch.load(model_path)
+                        checkpoint = torch.load(model_path, weights_only=True)
                         state_dict = checkpoint['model_state_dict']
                 model.load_state_dict(state_dict)
                 model.to(device)
