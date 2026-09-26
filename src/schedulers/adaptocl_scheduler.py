@@ -19,9 +19,9 @@ This scheduler is fully compatible with the existing Ekya/FP/DA/LA/AA pipeline a
 import time
 import numpy as np
 import signal
-import torch.multiprocessing as mp
+from contextlib import nullcontext
 from src.utils.logging_utils import log_info, log_warning
-from src.utils.signal_handlers import safe_kill
+from src.utils.signal_handlers import safe_kill, is_process_alive
 
 class AdaptOCLScheduler:
     """
@@ -79,354 +79,321 @@ class AdaptOCLScheduler:
         # Dynamic latency normalization
         self.latency_budget = self.adaptocl_params.get("latency_budget", 5.0)
 
+    # ------------------------------------------------------------------
+    # Small helpers
+    # ------------------------------------------------------------------
+    def _locked(self):
+        """Context manager for the shared-data lock (no-op if no lock was given)."""
+        return self.lock if self.lock else nullcontext()
+
+    @staticmethod
+    def _signal(pid, alive, sig):
+        """Send `sig` to `pid` only if the worker is known to be alive."""
+        if alive:
+            safe_kill(pid, sig)
+
+    def _run_both(self, train_pid, eval_pid, train_alive, eval_alive):
+        """Parallel phase: training and evaluation both run."""
+        self._signal(train_pid, train_alive, signal.SIGCONT)
+        self._signal(eval_pid, eval_alive, signal.SIGCONT)
+
+    def _train_only(self, train_pid, eval_pid, train_alive, eval_alive):
+        """Priority phase: training runs, evaluation is paused."""
+        self._signal(train_pid, train_alive, signal.SIGCONT)
+        self._signal(eval_pid, eval_alive, signal.SIGSTOP)
+
     def initialize_shared_data(self, shared_data):
         """Initialize scheduler-specific fields in shared_data."""
-        if self.lock:
-            with self.lock:
-                if "PENDING_CFG" not in shared_data:
-                    shared_data["PENDING_CFG"] = {"batch": None, "tslice": None}
-                if "last_applied_batch" not in shared_data:
-                    # Ensure initial last_applied_batch respects MIN_BATCH_SIZE if fetched from train_batch_size
-                    initial_batch_size = shared_data.get("train_batch_size")
-                    if initial_batch_size is not None:
-                         shared_data["last_applied_batch"] = max(initial_batch_size, self.MIN_BATCH_SIZE)
-                    else: # train_batch_size might not be set yet, default to MIN_BATCH_SIZE
-                         shared_data["last_applied_batch"] = self.MIN_BATCH_SIZE
-        else: # Should not happen if lock is passed correctly
+        with self._locked():
             if "PENDING_CFG" not in shared_data:
                 shared_data["PENDING_CFG"] = {"batch": None, "tslice": None}
             if "last_applied_batch" not in shared_data:
+                # train_batch_size might not be set yet; respect MIN_BATCH_SIZE either way
                 initial_batch_size = shared_data.get("train_batch_size")
                 if initial_batch_size is not None:
                     shared_data["last_applied_batch"] = max(initial_batch_size, self.MIN_BATCH_SIZE)
                 else:
                     shared_data["last_applied_batch"] = self.MIN_BATCH_SIZE
 
+    # ------------------------------------------------------------------
+    # Algorithm 1 steps
+    # ------------------------------------------------------------------
+    def _refresh_config(self, shared_data, batch_size, time_slice):
+        """Step 1: re-fetch the batch size and time slice (other components may change them)."""
+        with self._locked():
+            batch_size = shared_data.get("train_batch_size", batch_size)
+            time_slice = shared_data.get("timeslice", time_slice)
+        return batch_size, max(time_slice, self.MIN_TIME_SLICE)
+
+    def _apply_pending_at_experience_boundary(self, shared_data, batch_size, time_slice):
+        """
+        Step 2: when a new experience starts, commit the staged PENDING_CFG
+        (batch size / time slice) and ask the workers to pick it up.
+        """
+        new_experience = shared_data.get("current_experience", self.current_experience)
+        if new_experience == self.current_experience:
+            return batch_size, time_slice
+        self.current_experience = new_experience
+        log_info(f"[AdaptOCL] New experience detected: {self.current_experience}")
+        if self.current_experience == self.last_applied_experience:
+            return batch_size, time_slice
+
+        with self._locked():
+            pending_cfg = shared_data.get("PENDING_CFG", {"batch": None, "tslice": None})
+            applied_new_config = False
+            if pending_cfg["batch"] is not None:
+                batch_size = max(pending_cfg["batch"], self.MIN_BATCH_SIZE)
+                shared_data["train_batch_size"] = batch_size
+                applied_new_config = True
+                log_info(f"[AdaptOCL] Applied pending batch: {batch_size} at exp {self.current_experience}")
+            if pending_cfg["tslice"] is not None:
+                shared_data["timeslice"] = max(pending_cfg["tslice"], self.MIN_TIME_SLICE)
+                time_slice = shared_data["timeslice"]
+                applied_new_config = True
+                log_info(f"[AdaptOCL] Applied pending tslice: {time_slice} at exp {self.current_experience}")
+
+            if applied_new_config:
+                shared_data["last_applied_batch"] = batch_size
+                shared_data["PENDING_CFG"] = {"batch": None, "tslice": None}
+                shared_data["CONFIG_UPDATE_REQUESTED"] = True  # Notify worker
+                self.last_applied_experience = self.current_experience
+        return batch_size, time_slice
+
+    def _compute_uam(self, shared_data):
+        """
+        Step 3: UAM = omega * acc - (1 - omega) * normalized_latency, its change
+        since the last tick, and the change after epsilon hysteresis (step 4).
+        """
+        acc = shared_data.get("latest_accuracy", 0.0)
+        if acc is None:
+            acc = 0.0
+        latency = shared_data.get("latest_latency", 1.0)
+        if latency is None or latency <= 0:
+            latency = 1.0
+        normalized_latency = min(latency / self.latency_budget, 1.0)
+
+        uam = self.omega * acc - (1.0 - self.omega) * normalized_latency
+        delta_uam = 0.0 if self.last_uam is None else uam - self.last_uam
+        effective_delta_uam = 0.0 if abs(delta_uam) < self.uam_eps else delta_uam
+        return acc, latency, normalized_latency, uam, delta_uam, effective_delta_uam
+
+    def _stage_pending_config(self, shared_data, batch_size, time_slice, effective_delta_uam, B_max):
+        """
+        Step 5: grow (dUAM > 0) or shrink (dUAM < 0) batch size by gamma and time
+        slice by eta. The new values are only staged in PENDING_CFG; they are
+        committed at the next experience boundary.
+        """
+        direction = np.sign(effective_delta_uam)
+        new_batch_size = int(np.clip(round(batch_size * (1 + self.gamma * direction)), self.MIN_BATCH_SIZE, B_max))
+        new_time_slice = max(time_slice * (1 + self.eta * direction), self.MIN_TIME_SLICE)
+
+        with self._locked():
+            pending = shared_data.get("PENDING_CFG", {"batch": None, "tslice": None}).copy()
+            changed = False
+            if new_batch_size != batch_size and (pending.get("batch") is None or new_batch_size != pending.get("batch")):
+                pending["batch"] = new_batch_size
+                log_info(f"[AdaptOCL] Pending batch size: {batch_size}->{new_batch_size}")
+                changed = True
+            if abs(new_time_slice - time_slice) > 1e-6 and (pending.get("tslice") is None or abs(new_time_slice - pending.get("tslice")) > 1e-6):
+                pending["tslice"] = new_time_slice
+                log_info(f"[AdaptOCL] Pending time slice: {time_slice:.3f}->{new_time_slice:.3f}")
+                changed = True
+            if changed:
+                shared_data["PENDING_CFG"] = pending
+
+    def _update_internal_mode(self, effective_delta_uam, current_time):
+        """Step 6: dUAM > 0 selects latency-aware (LA) mode, otherwise accuracy-aware (AA)."""
+        previous_mode = self.current_internal_mode
+        self.current_internal_mode = "latency_aware" if effective_delta_uam > 0 else "adaptive_accuracy"
+        if self.current_internal_mode != previous_mode:
+            log_info(f"[AdaptOCL] Switched internal mode from {previous_mode} to {self.current_internal_mode} (eff_ΔUAM={effective_delta_uam:.3f})")
+            # A mode switch restarts the priority phase of the new mode
+            self.la_priority_phase_active = True
+            self.aa_priority_phase_active = True
+            self.accuracy_check_count = 0
+            self.last_forced_eval_time = current_time
+
+    # ------------------------------------------------------------------
+    # Worker control (step 7)
+    # ------------------------------------------------------------------
+    def _control_workers(self, shared_data, train_pid, eval_pid, train_alive, eval_alive,
+                         batch_size, time_slice, current_time, should_log):
+        """Step 7: pause/resume train and eval according to operation_focus and the internal mode."""
+        if self.operation_focus == "continuous_eval":
+            self._signal(eval_pid, eval_alive, signal.SIGCONT)
+            self._signal(train_pid, train_alive, signal.SIGCONT)
+            if should_log:
+                log_info(f"[AdaptOCL_ContEval] Continuous evaluation. Train parallel. B={batch_size}, T_slice={time_slice:.2f}")
+        elif self.operation_focus == "balanced":
+            if self.current_internal_mode == "latency_aware":
+                self._control_latency_aware(shared_data, train_pid, eval_pid, train_alive, eval_alive, current_time, should_log)
+            elif self.current_internal_mode == "adaptive_accuracy":
+                self._control_adaptive_accuracy(shared_data, train_pid, eval_pid, train_alive, eval_alive, current_time, should_log)
+        else:  # Should not happen with proper config validation
+            log_warning(f"[AdaptOCL] Unknown operation_focus: {self.operation_focus}. Defaulting to parallel execution.")
+            self._run_both(train_pid, eval_pid, train_alive, eval_alive)
+
+    def _control_latency_aware(self, shared_data, train_pid, eval_pid, train_alive, eval_alive, current_time, should_log):
+        """
+        LA mode: train-only until `la_priority_percent` of the experiences are done
+        (with a short forced eval every `forced_eval_interval`), then parallel.
+        """
+        if self.la_priority_phase_active:
+            current_exp = shared_data.get("current_experience", 0)
+            total_exps = shared_data.get("total_experiences", 1)
+            progress_percent = (current_exp / total_exps) if total_exps > 0 else 0
+
+            if progress_percent < self.la_priority_percent and not shared_data.get("all_experiences_completed", False):
+                self._train_only(train_pid, eval_pid, train_alive, eval_alive)
+                if should_log:
+                    log_info(f"[AdaptOCL] LA Priority: Training (Exp {current_exp}/{total_exps}, Prog {progress_percent:.2f} < {self.la_priority_percent:.2f}). Eval stopped.")
+                if eval_alive and current_time - self.last_forced_eval_time >= self.forced_eval_interval:
+                    log_info(f"[AdaptOCL] LA Priority: Forced eval check.")
+                    safe_kill(eval_pid, signal.SIGCONT)
+                    time.sleep(self.eval_transition_time)  # Let eval run briefly
+                    self._train_only(train_pid, eval_pid, train_alive, eval_alive)
+                    self.last_forced_eval_time = time.time()  # Update timestamp AFTER eval
+            else:
+                self.la_priority_phase_active = False
+                log_info(f"[AdaptOCL] LA: Priority phase ended (Prog {progress_percent:.2f} or all exp completed). Switching to parallel.")
+
+        if not self.la_priority_phase_active:
+            self._run_both(train_pid, eval_pid, train_alive, eval_alive)
+            if should_log:
+                log_info(f"[AdaptOCL] LA Parallel: Training and Evaluation running.")
+
+    def _control_adaptive_accuracy(self, shared_data, train_pid, eval_pid, train_alive, eval_alive, current_time, should_log):
+        """
+        AA mode: train-only, with a forced accuracy check every `forced_eval_interval`;
+        switch to parallel once accuracy reaches `aa_accuracy_threshold` or after
+        `max_accuracy_checks` checks.
+        """
+        if self.aa_priority_phase_active:
+            perform_eval_check = False
+            if current_time - self.last_forced_eval_time >= self.forced_eval_interval:
+                perform_eval_check = True
+                self.accuracy_check_count += 1
+                log_info(f"[AdaptOCL] AA Priority: Forced eval check #{self.accuracy_check_count}.")
+
+            if perform_eval_check and eval_alive:
+                self._forced_accuracy_check(shared_data, train_pid, eval_pid, train_alive, eval_alive)
+            else:
+                self._train_only(train_pid, eval_pid, train_alive, eval_alive)
+                if should_log:
+                    log_info(f"[AdaptOCL] AA Priority: Training. Eval stopped. Next check in {self.forced_eval_interval - (current_time - self.last_forced_eval_time):.1f}s")
+
+        if not self.aa_priority_phase_active:
+            self._run_both(train_pid, eval_pid, train_alive, eval_alive)
+            if should_log:
+                log_info(f"[AdaptOCL] AA Parallel: Training and Evaluation running.")
+
+    def _forced_accuracy_check(self, shared_data, train_pid, eval_pid, train_alive, eval_alive):
+        """Pause training, let eval run for `eval_transition_time`, and compare accuracy to the AA threshold."""
+        self._signal(train_pid, train_alive, signal.SIGSTOP)  # Pause train during eval
+        safe_kill(eval_pid, signal.SIGCONT)
+        time.sleep(self.eval_transition_time)
+        self.last_forced_eval_time = time.time()  # Update timestamp AFTER eval run
+
+        latest_acc = shared_data.get("latest_accuracy", 0.0)
+        if latest_acc is None:
+            latest_acc = 0.0  # integrity check
+        log_info(f"[AdaptOCL] AA Priority: Accuracy check result: {latest_acc:.4f} (threshold: {self.aa_accuracy_threshold:.4f})")
+
+        if latest_acc >= self.aa_accuracy_threshold:
+            self.aa_priority_phase_active = False
+            log_info(f"[AdaptOCL] AA: Accuracy threshold reached! ({latest_acc:.4f} >= {self.aa_accuracy_threshold:.4f}). Switching to parallel.")
+        elif self.accuracy_check_count >= self.max_accuracy_checks:
+            self.aa_priority_phase_active = False
+            log_info(f"[AdaptOCL] AA: Max accuracy checks ({self.max_accuracy_checks}) reached. Forcing parallel mode.")
+
+        if self.aa_priority_phase_active:
+            self._train_only(train_pid, eval_pid, train_alive, eval_alive)
+        else:
+            self._run_both(train_pid, eval_pid, train_alive, eval_alive)
+
+    def _release_eval_worker(self, shared_data, eval_pid):
+        """
+        After the loop ends, make sure the eval worker is not left SIGSTOPped by
+        this scheduler so it can finish its last evaluation and exit. Under global
+        termination, main.py handles cleanup instead.
+        """
+        if shared_data.get("TERMINATE_SIGNAL", False):
+            log_info("[AdaptOCL] Global termination signal active, main process will handle eval_worker cleanup.")
+            return
+        if not is_process_alive(eval_pid):
+            log_info("[AdaptOCL] Eval_worker was not alive at scheduler exit or termination already in progress.")
+            return
+        log_info(f"[AdaptOCL] Training has likely ended. Attempting to ensure eval_worker (PID: {eval_pid}) is woken and can terminate.")
+        safe_kill(eval_pid, signal.SIGCONT)
+        time.sleep(0.1)  # Give a moment for SIGCONT to be processed
+        log_info(f"[AdaptOCL] Sent SIGCONT to eval_worker (PID: {eval_pid}) to ensure it is not stopped.")
+
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
     def run(self, train_pid, eval_pid, shared_data):
         """
-        AdaptOCL scheduler worker (Algorithm 1)
-        Parameters:
-        - gamma: batch size changing rate
-        - eta: timeslice changing rate
-        - alpha: threshold for LA mode (equation 1)
-        - delta_acc: accuracy threshold for AA mode (equation 2)
+        AdaptOCL scheduler worker (Algorithm 1). Each tick (one time slice):
+          1. re-fetch batch size / time slice,
+          2. commit staged config at experience boundaries,
+          3-4. compute UAM and its hysteresis-filtered change,
+          5. stage the next batch size / time slice,
+          6. pick LA or AA internal mode,
+          7. pause/resume the train and eval workers accordingly.
+        The loop exits when training finishes or both workers are gone.
         """
-        MIN_TIME_SLICE = 1.0  # Minimum 1 second
-        LOGGING_INTERVAL = 5.0  # Log every 5 seconds
-        last_log_time = 0
-        
-        # Initialize shared data fields if not present
         self.initialize_shared_data(shared_data)
 
-        scheduler = self
-        # Initial time_slice, will be updated if PENDING_CFG has a value or from shared_data
-        time_slice = scheduler.time_slice
-
-        omega = scheduler.omega
-        gamma = scheduler.gamma
-        eta = scheduler.eta
-        
-        # Initial batch size, re-fetched each loop
-        batch_size = shared_data.get("train_batch_size", self.MIN_BATCH_SIZE) # Default to MIN_BATCH_SIZE
-        batch_size = max(batch_size, self.MIN_BATCH_SIZE) # Ensure it's not below min
+        time_slice = self.time_slice
+        batch_size = max(shared_data.get("train_batch_size", self.MIN_BATCH_SIZE), self.MIN_BATCH_SIZE)
         B_max = shared_data.get("max_batch_size", 256)
-
-        # Get total experiences for LA condition (now mostly for logging context)
         self.total_experiences = shared_data.get("total_experiences", 1)
-        # self.current_experience is now updated at the start of the loop
 
-        log_info(f"[AdaptOCL] Start: ω={omega}, γ={gamma}, η={eta}, ε={self.uam_eps}") # Removed alpha, delta_acc from log
+        log_info(f"[AdaptOCL] Start: ω={self.omega}, γ={self.gamma}, η={self.eta}, ε={self.uam_eps}")
         log_info(f"[AdaptOCL] Initial config: batch_size={batch_size}, time_slice={time_slice}")
         log_info(f"[AdaptOCL] Using dynamic latency budget: {self.latency_budget}")
 
+        last_log_time = 0
         while shared_data.get("train_process_active", True):
             current_time = time.time()
-            
-            # 1. Latest Batch-Size Re-fetch & Time-slice Re-fetch
-            if self.lock:
-                with self.lock:
-                    batch_size = shared_data.get("train_batch_size", batch_size)
-                    # Also re-fetch time_slice, as it might be changed by other components
-                    # or at experience boundary
-                    time_slice = shared_data.get("timeslice", time_slice)
-            else:
-                batch_size = shared_data.get("train_batch_size", batch_size)
-                time_slice = shared_data.get("timeslice", time_slice)
-            time_slice = max(time_slice, MIN_TIME_SLICE)
+            should_log = current_time - last_log_time >= self.LOGGING_INTERVAL
 
-            # 2. Experience-Boundary Application
-            new_experience = shared_data.get("current_experience", self.current_experience)
-            if new_experience != self.current_experience:
-                self.current_experience = new_experience
-                log_info(f"[AdaptOCL] New experience detected: {self.current_experience}")
-                if self.current_experience != self.last_applied_experience:
-                    if self.lock:
-                        with self.lock:
-                            pending_cfg = shared_data.get("PENDING_CFG", {"batch": None, "tslice": None})
-                            applied_new_config = False
-                            if pending_cfg["batch"] is not None:
-                                applied_batch_val = max(pending_cfg["batch"], self.MIN_BATCH_SIZE)
-                                shared_data["train_batch_size"] = applied_batch_val
-                                batch_size = applied_batch_val # Update local var
-                                applied_new_config = True
-                                log_info(f"[AdaptOCL] Applied pending batch: {batch_size} at exp {self.current_experience}")
-                            if pending_cfg["tslice"] is not None:
-                                shared_data["timeslice"] = max(pending_cfg["tslice"], MIN_TIME_SLICE)
-                                time_slice = shared_data["timeslice"] # Update local var
-                                applied_new_config = True
-                                log_info(f"[AdaptOCL] Applied pending tslice: {time_slice} at exp {self.current_experience}")
+            batch_size, time_slice = self._refresh_config(shared_data, batch_size, time_slice)
+            batch_size, time_slice = self._apply_pending_at_experience_boundary(shared_data, batch_size, time_slice)
+            acc, latency, normalized_latency, uam, delta_uam, effective_delta_uam = self._compute_uam(shared_data)
 
-                            if applied_new_config:
-                                shared_data["last_applied_batch"] = batch_size
-                                shared_data["PENDING_CFG"] = {"batch": None, "tslice": None}
-                                shared_data["CONFIG_UPDATE_REQUESTED"] = True # Notify worker
-                                self.last_applied_experience = self.current_experience
-                    else: # No lock, less safe but proceed
-                        pending_cfg = shared_data.get("PENDING_CFG", {"batch": None, "tslice": None})
-                        applied_new_config = False
-                        if pending_cfg["batch"] is not None:
-                            applied_batch_val = max(pending_cfg["batch"], self.MIN_BATCH_SIZE)
-                            shared_data["train_batch_size"] = applied_batch_val
-                            batch_size = applied_batch_val
-                            applied_new_config = True
-                        if pending_cfg["tslice"] is not None:
-                            shared_data["timeslice"] = max(pending_cfg["tslice"], MIN_TIME_SLICE)
-                            time_slice = shared_data["timeslice"]
-                            applied_new_config = True
-
-                        if applied_new_config:
-                            shared_data["last_applied_batch"] = batch_size
-                            shared_data["PENDING_CFG"] = {"batch": None, "tslice": None}
-                            shared_data["CONFIG_UPDATE_REQUESTED"] = True
-                            self.last_applied_experience = self.current_experience
-
-            # Calculate and update values every iteration
-            acc = shared_data.get("latest_accuracy", 0.0)
-            if acc is None:
-                acc = 0.0
-            latency = shared_data.get("latest_latency", 1.0)
-            if latency is None or latency <= 0:
-                latency = 1.0
-                
-            # Calculate normalized latency using dynamic budget
-            normalized_latency = min(latency / self.latency_budget, 1.0)
-                
-            # Calculate UAM (paper equation, corrected form)
-            uam = omega * acc - (1.0 - omega) * normalized_latency
-            delta_uam = 0.0 if self.last_uam is None else uam - self.last_uam
-                        
-            # 4. ΔUAM Hysteresis
-            if abs(delta_uam) < self.uam_eps:
-                effective_delta_uam = 0.0
-            else:
-                effective_delta_uam = delta_uam
-
-            # Log detailed metrics
-            pending_cfg_log = shared_data.get("PENDING_CFG", {"batch": "N/A", "tslice": "N/A"})
-            last_applied_batch_log = shared_data.get("last_applied_batch", "N/A")
-            if current_time - last_log_time >= self.LOGGING_INTERVAL: # Log less frequently
+            if should_log:
+                pending_cfg_log = shared_data.get("PENDING_CFG", {"batch": "N/A", "tslice": "N/A"})
+                last_applied_batch_log = shared_data.get("last_applied_batch", "N/A")
                 log_info(f"[AdaptOCL] Metrics: acc={acc:.3f}, lat={latency:.3f}, norm_lat={normalized_latency:.3f}, B={batch_size}, T_slice={time_slice:.2f}")
                 log_info(f"[AdaptOCL] UAM={uam:.3f}, ΔUAM={delta_uam:.3f} (eff_ΔUAM={effective_delta_uam:.3f}), exp={self.current_experience}/{self.total_experiences}, internal_mode={self.current_internal_mode}, pend_cfg={pending_cfg_log}, ack_batch={last_applied_batch_log}")
-            
-            # Update PENDING_CFG based on effective_delta_uam (batch size and time slice adjustments)
+
             if effective_delta_uam != 0:
-                new_batch_size_pending = int(np.clip(
-                    round(batch_size * (1 + gamma * np.sign(effective_delta_uam))),
-                    self.MIN_BATCH_SIZE, B_max
-                ))
-                new_time_slice_pending = max(
-                    time_slice * (1 + eta * np.sign(effective_delta_uam)),
-                    self.MIN_TIME_SLICE
-                )
+                self._stage_pending_config(shared_data, batch_size, time_slice, effective_delta_uam, B_max)
+            self._update_internal_mode(effective_delta_uam, current_time)
 
-                if self.lock:
-                    with self.lock:
-                        current_pending = shared_data.get("PENDING_CFG", {"batch": None, "tslice": None}).copy() # Use .copy()
-                        made_pending_change = False
-                        if new_batch_size_pending != batch_size and (current_pending.get("batch") is None or new_batch_size_pending != current_pending.get("batch")):
-                            current_pending["batch"] = new_batch_size_pending
-                            log_info(f"[AdaptOCL] Pending batch size: {batch_size}->{new_batch_size_pending}")
-                            made_pending_change = True
-                        if abs(new_time_slice_pending - time_slice) > 1e-6 and (current_pending.get("tslice") is None or abs(new_time_slice_pending - current_pending.get("tslice")) > 1e-6):
-                            current_pending["tslice"] = new_time_slice_pending
-                            log_info(f"[AdaptOCL] Pending time slice: {time_slice:.3f}->{new_time_slice_pending:.3f}")
-                            made_pending_change = True
-                        if made_pending_change:
-                             shared_data["PENDING_CFG"] = current_pending
-                else: # No lock - less safe, for completeness
-                    current_pending_no_lock = shared_data.get("PENDING_CFG", {"batch": None, "tslice": None}).copy()
-                    # ... (similar logic for no lock, omitted for brevity but should mirror above) ...
-                    shared_data["PENDING_CFG"] = current_pending_no_lock
-
-
-            # Determine internal mode based on UAM and handle mode switching logic
-            previous_internal_mode = self.current_internal_mode
-            if effective_delta_uam > 0:
-                self.current_internal_mode = "latency_aware"
-            else: # Covers effective_delta_uam <= 0
-                self.current_internal_mode = "adaptive_accuracy"
-
-            if self.current_internal_mode != previous_internal_mode:
-                log_info(f"[AdaptOCL] Switched internal mode from {previous_internal_mode} to {self.current_internal_mode} (eff_ΔUAM={effective_delta_uam:.3f})")
-                # Reset priority phase flags and counters when switching internal mode
-                self.la_priority_phase_active = True 
-                self.aa_priority_phase_active = True
-                self.accuracy_check_count = 0
-                self.last_forced_eval_time = current_time # Reset eval timer
-
-            # --- Moved Process Liveness Check Up ---
-            train_pid_alive = safe_kill(train_pid, 0) # Check if train process is alive
-            eval_pid_alive = safe_kill(eval_pid, 0)   # Check if eval process is alive
-
-            if not train_pid_alive and not eval_pid_alive:
+            train_alive = is_process_alive(train_pid)
+            eval_alive = is_process_alive(eval_pid)
+            if not train_alive and not eval_alive:
                 log_info("[AdaptOCL] Both train and eval processes are dead. Exiting scheduler.")
                 break
-            if not train_pid_alive: # If only train is dead, try to let eval finish if it was running
-                if eval_pid_alive: safe_kill(eval_pid, signal.SIGCONT)
+            if not train_alive:  # Let eval finish if it is still running
+                self._signal(eval_pid, eval_alive, signal.SIGCONT)
                 log_info("[AdaptOCL] Train process is dead. Waiting for eval or exiting.")
-                time.sleep(self.MIN_TIME_SLICE) # Wait a bit
-                continue # Re-check at next iteration
+                time.sleep(self.MIN_TIME_SLICE)
+                continue
 
-            # --- Main Process Control Logic (based on operation_focus) ---
-            if self.operation_focus == "continuous_eval":
-                if eval_pid_alive:
-                    safe_kill(eval_pid, signal.SIGCONT)
-                if train_pid_alive:
-                    safe_kill(train_pid, signal.SIGCONT)
+            self._control_workers(shared_data, train_pid, eval_pid, train_alive, eval_alive,
+                                  batch_size, time_slice, current_time, should_log)
 
-                if current_time - last_log_time >= self.LOGGING_INTERVAL:
-                    log_info(f"[AdaptOCL_ContEval] Continuous evaluation. Train parallel. B={batch_size}, T_slice={time_slice:.2f}")
-
-            elif self.operation_focus == "balanced": # Original AdaptOCL behavior
-                if self.current_internal_mode == "latency_aware":
-                    if self.la_priority_phase_active:
-                        current_exp = shared_data.get("current_experience", 0)
-                        total_exps = shared_data.get("total_experiences", 1) # Avoid div by zero
-                        progress_percent = (current_exp / total_exps) if total_exps > 0 else 0
-
-                        if progress_percent < self.la_priority_percent and not shared_data.get("all_experiences_completed", False):
-                            # LA Priority Phase: Train focus
-                            if train_pid_alive: safe_kill(train_pid, signal.SIGCONT)
-                            if eval_pid_alive: safe_kill(eval_pid, signal.SIGSTOP)
-                            if current_time - last_log_time >= self.LOGGING_INTERVAL:
-                                 log_info(f"[AdaptOCL] LA Priority: Training (Exp {current_exp}/{total_exps}, Prog {progress_percent:.2f} < {self.la_priority_percent:.2f}). Eval stopped.")
-
-                            # Optional: Forced eval check (from timeline_scheduler)
-                            if eval_pid_alive and current_time - self.last_forced_eval_time >= self.forced_eval_interval:
-                                log_info(f"[AdaptOCL] LA Priority: Forced eval check.")
-                                safe_kill(eval_pid, signal.SIGCONT)
-                                time.sleep(self.eval_transition_time) # Let eval run briefly
-                                if train_pid_alive: safe_kill(train_pid, signal.SIGCONT) # Ensure train is running
-                                if eval_pid_alive: safe_kill(eval_pid, signal.SIGSTOP)   # Stop eval again
-                                self.last_forced_eval_time = time.time() # Update timestamp AFTER eval
-                        else:
-                            self.la_priority_phase_active = False
-                            log_info(f"[AdaptOCL] LA: Priority phase ended (Prog {progress_percent:.2f} or all exp completed). Switching to parallel.")
-                            # Fall through to parallel execution
-
-                    if not self.la_priority_phase_active: # LA Parallel Phase
-                        if train_pid_alive: safe_kill(train_pid, signal.SIGCONT)
-                        if eval_pid_alive: safe_kill(eval_pid, signal.SIGCONT)
-                        if current_time - last_log_time >= self.LOGGING_INTERVAL:
-                            log_info(f"[AdaptOCL] LA Parallel: Training and Evaluation running.")
-
-                elif self.current_internal_mode == "adaptive_accuracy":
-                    if self.aa_priority_phase_active:
-                        # AA Priority Phase: Train focus, periodic eval for accuracy check
-                        perform_eval_check = False
-                        if current_time - self.last_forced_eval_time >= self.forced_eval_interval:
-                            perform_eval_check = True
-                            self.accuracy_check_count += 1
-                            log_info(f"[AdaptOCL] AA Priority: Forced eval check #{self.accuracy_check_count}.")
-
-                        if perform_eval_check and eval_pid_alive:
-                            if train_pid_alive: safe_kill(train_pid, signal.SIGSTOP) # Pause train during eval
-                            safe_kill(eval_pid, signal.SIGCONT)
-                            time.sleep(self.eval_transition_time) # Let eval run
-                            self.last_forced_eval_time = time.time() # Update timestamp AFTER eval run
-
-                            latest_acc = shared_data.get("latest_accuracy", 0.0)
-                            if latest_acc is None:
-                                # integrity check, fallback to 0.0
-                                latest_acc = 0.0
-                            log_info(f"[AdaptOCL] AA Priority: Accuracy check result: {latest_acc:.4f} (threshold: {self.aa_accuracy_threshold:.4f})")
-
-                            if latest_acc >= self.aa_accuracy_threshold:
-                                self.aa_priority_phase_active = False
-                                log_info(f"[AdaptOCL] AA: Accuracy threshold reached! ({latest_acc:.4f} >= {self.aa_accuracy_threshold:.4f}). Switching to parallel.")
-                            elif self.accuracy_check_count >= self.max_accuracy_checks:
-                                self.aa_priority_phase_active = False
-                                log_info(f"[AdaptOCL] AA: Max accuracy checks ({self.max_accuracy_checks}) reached. Forcing parallel mode.")
-
-                            # Resume train, stop eval (if still in priority and eval was started)
-                            if self.aa_priority_phase_active: # if not switched to parallel
-                                if train_pid_alive: safe_kill(train_pid, signal.SIGCONT)
-                                if eval_pid_alive: safe_kill(eval_pid, signal.SIGSTOP) # Stop eval if it was running for check
-                            else: # Switched to parallel, ensure both are running
-                                if train_pid_alive: safe_kill(train_pid, signal.SIGCONT)
-                                if eval_pid_alive: safe_kill(eval_pid, signal.SIGCONT)
-
-                        else: # Not time for eval check, or eval_pid not alive
-                            if self.aa_priority_phase_active: # Still in priority phase
-                                 if train_pid_alive: safe_kill(train_pid, signal.SIGCONT)
-                                 if eval_pid_alive: safe_kill(eval_pid, signal.SIGSTOP)
-                                 if current_time - last_log_time >= self.LOGGING_INTERVAL:
-                                    log_info(f"[AdaptOCL] AA Priority: Training. Eval stopped. Next check in {self.forced_eval_interval - (current_time - self.last_forced_eval_time):.1f}s")
-
-                    if not self.aa_priority_phase_active: # AA Parallel Phase
-                        if train_pid_alive: safe_kill(train_pid, signal.SIGCONT)
-                        if eval_pid_alive: safe_kill(eval_pid, signal.SIGCONT)
-                        if current_time - last_log_time >= self.LOGGING_INTERVAL:
-                            log_info(f"[AdaptOCL] AA Parallel: Training and Evaluation running.")
-
-                # Fallback if train process dies during priority phase of AA
-                if self.current_internal_mode == "adaptive_accuracy" and self.aa_priority_phase_active and not train_pid_alive:
-                    log_info("[AdaptOCL] AA Priority: Train process died. Switching to parallel/eval only.")
-                    self.aa_priority_phase_active = False # Exit priority phase
-                    if eval_pid_alive: safe_kill(eval_pid, signal.SIGCONT) # Ensure eval can run
-            else: # Should not happen with proper config validation
-                log_warning(f"[AdaptOCL] Unknown operation_focus: {self.operation_focus}. Defaulting to parallel execution.")
-                if train_pid_alive: safe_kill(train_pid, signal.SIGCONT)
-                if eval_pid_alive: safe_kill(eval_pid, signal.SIGCONT)
-
-            # Update state for next iteration
             self.last_acc = acc
             self.last_uam = uam
-            # self.current_internal_mode is already updated
-            
-            # Update logging interval timer
-            if current_time - last_log_time >= self.LOGGING_INTERVAL:
+            if should_log:
                 last_log_time = current_time
-            
-            # Main scheduler loop sleep
-            time.sleep(max(time_slice, self.MIN_TIME_SLICE)) # Use self.MIN_TIME_SLICE
-            
-        # Scheduler loop exited (likely because train_process_active is False or TERMINATE_SIGNAL)
-        log_info("[AdaptOCL] Main scheduler loop finished.")
+            time.sleep(max(time_slice, self.MIN_TIME_SLICE))
 
-        # Ensure eval_worker is properly handled if it's still alive when scheduler exits
-        # This is important if the scheduler stops due to train_process_active becoming False
-        # while eval_worker was SIGSTOPped by the scheduler itself.
-        if not shared_data.get("TERMINATE_SIGNAL", False): # Only do this if not already in global termination sequence
-            eval_pid_alive_at_exit = safe_kill(eval_pid, 0)
-            if eval_pid_alive_at_exit:
-                log_info(f"[AdaptOCL] Training has likely ended. Attempting to ensure eval_worker (PID: {eval_pid}) is woken and can terminate.")
-                try:
-                    # Wake it up in case it was SIGSTOPped by this scheduler
-                    safe_kill(eval_pid, signal.SIGCONT) 
-                    time.sleep(0.1) # Give a moment for SIGCONT to be processed
-                    # We don't necessarily send SIGTERM here, as the main process's cleanup 
-                    # should handle it. The critical part is ensuring it's not SIGSTOPped.
-                    # If it's meant to complete some final evaluation, it can do so now.
-                    # If main.py is already terminating, it will get a SIGTERM from there.
-                    log_info(f"[AdaptOCL] Sent SIGCONT to eval_worker (PID: {eval_pid}) to ensure it is not stopped.")
-                except Exception as e:
-                    log_warning(f"[AdaptOCL] Error during final SIGCONT to eval_worker (PID: {eval_pid}): {e}")
-            else:
-                log_info("[AdaptOCL] Eval_worker was not alive at scheduler exit or termination already in progress.")
-        else:
-            log_info("[AdaptOCL] Global termination signal active, main process will handle eval_worker cleanup.")
-            
+        log_info("[AdaptOCL] Main scheduler loop finished.")
+        self._release_eval_worker(shared_data, eval_pid)
         log_info("[AdaptOCL] Scheduler worker stopping.")
 
 def adaptocl_scheduler_worker(global_scheduler, train_pid, eval_pid, shared_data, lock): # Added lock
