@@ -188,10 +188,12 @@ def _run_continuous_eval(w, time_slice):
     w.signal_eval(signal.SIGCONT)
     while w.check_alive():
         w.relay_config_update()
-        if w.train_alive:
-            log_info("[Scheduler] Resuming training")
-            safe_kill(w.train_pid, signal.SIGCONT)
-            time.sleep(time_slice)
+        if not w.train_alive:
+            time.sleep(time_slice)  # Only eval is left; poll instead of busy-spinning
+            continue
+        log_info("[Scheduler] Resuming training")
+        safe_kill(w.train_pid, signal.SIGCONT)
+        time.sleep(time_slice)
         if w.train_alive and w.check_alive():
             log_info("[Scheduler] Pausing training")
             safe_kill(w.train_pid, signal.SIGSTOP)
@@ -256,6 +258,11 @@ def _run_adaptive_time(global_scheduler, w, shared_data, time_slice):
             break
     log_info("[GlobalScheduler] Both processes have completed. Scheduler exiting.")
 
+def _latest_accuracy(shared_data):
+    """Latest accuracy reported by the workers; None (no measurement yet) counts as 0.0."""
+    acc = shared_data.get("latest_accuracy", 0)
+    return 0.0 if acc is None else acc
+
 def _run_adaptive_accuracy(global_scheduler, w, shared_data, time_slice):
     """AA: train-only with periodic accuracy checks until accuracy_threshold (or MAX_ACCURACY_CHECKS), then parallel."""
     threshold = global_scheduler.adaptive_params["accuracy_threshold"]
@@ -270,7 +277,7 @@ def _run_adaptive_accuracy(global_scheduler, w, shared_data, time_slice):
         current_time = time.time()
 
         if shared_data and "latest_accuracy" in shared_data:
-            log_info(f"[GlobalScheduler] Current accuracy: {shared_data.get('latest_accuracy', 0):.4f} (threshold: {threshold:.4f})")
+            log_info(f"[GlobalScheduler] Current accuracy: {_latest_accuracy(shared_data):.4f} (threshold: {threshold:.4f})")
 
         if priority_phase:
             if current_time - last_eval_check_time > FORCED_EVAL_INTERVAL:
@@ -281,7 +288,7 @@ def _run_adaptive_accuracy(global_scheduler, w, shared_data, time_slice):
                 last_eval_check_time = current_time
 
                 if shared_data and "latest_accuracy" in shared_data:
-                    latest_accuracy = shared_data.get("latest_accuracy", 0)
+                    latest_accuracy = _latest_accuracy(shared_data)
                     log_info(f"[GlobalScheduler] Accuracy check result: {latest_accuracy:.4f} / {threshold:.4f}")
                     if latest_accuracy >= threshold:
                         priority_phase = False
