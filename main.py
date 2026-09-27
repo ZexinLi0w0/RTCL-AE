@@ -27,7 +27,7 @@ from src.workers.train_worker import train_worker
 from src.workers.eval_worker import eval_worker
 from src.workers.config_worker import dynamic_config_worker
 from src.workers.monitor_worker import memory_monitor_worker
-from src.utils.signal_handlers import signal_handler
+from src.utils.signal_handlers import signal_handler, safe_kill
 from src.utils.analytics import analyze_batch_size_changes
 from src.utils.logging_utils import setup_logger, timestamp_logger_worker
 
@@ -97,6 +97,45 @@ def create_benchmark(args):
             raise ValueError("Invalid scenario for soft robot benchmark")
     else:
         raise ValueError("Invalid benchmark name")
+
+def stop_processes(processes, grace_seconds=10):
+    """
+    SIGTERM every live worker, wait up to `grace_seconds`, then force-terminate.
+    Workers may be SIGSTOPped by a scheduler, so they get SIGCONT first; otherwise
+    they could not handle the SIGTERM.
+    """
+    for p in processes:
+        if p and p.is_alive():
+            logger.info(f"Sending termination signal to process {p.name} (PID: {p.pid})")
+            safe_kill(p.pid, signal.SIGCONT)
+            safe_kill(p.pid, signal.SIGTERM)
+    deadline = time.time() + grace_seconds
+    while any(p and p.is_alive() for p in processes) and time.time() < deadline:
+        time.sleep(0.5)
+    for p in processes:
+        if p and p.is_alive():
+            logger.warning(f"Force terminating process {p.name}")
+            safe_kill(p.pid, signal.SIGCONT)
+            p.terminate()
+            p.join(timeout=1)
+
+def shutdown_manager(manager, shared_data):
+    """
+    Explicitly shut down the multiprocessing Manager before interpreter exit.
+    With --enable_double_buffer the Manager process holds torch tensors (model
+    weights); leaving it to the implicit at-exit finalizer makes that process
+    abort with "terminate called without an active exception". Dropping the
+    shared entries and calling shutdown() while the interpreter is still fully
+    alive avoids this.
+    """
+    try:
+        shared_data.clear()
+    except Exception as e:
+        logger.warning(f"Could not clear shared_data before shutdown: {e}")
+    try:
+        manager.shutdown()
+    except Exception as e:
+        logger.warning(f"Manager shutdown error: {e}")
 
 def main():
     global TERMINATE_SIGNAL
@@ -326,23 +365,7 @@ def main():
                 # Update shared data to notify all processes
                 shared_data["TERMINATE_SIGNAL"] = True
                 
-                # Gracefully terminate all processes
-                for p in processes:
-                    if p.is_alive():
-                        logger.info(f"Sending termination signal to process {p.name} (PID: {p.pid})")
-                        os.kill(p.pid, signal.SIGTERM)
-                
-                # Give processes time to clean up
-                timeout = time.time() + 10  # 10 seconds timeout
-                while any(p.is_alive() for p in processes) and time.time() < timeout:
-                    time.sleep(0.5)
-                
-                # Force terminate if needed
-                for p in processes:
-                    if p.is_alive():
-                        logger.warning(f"Force terminating process {p.name}")
-                        p.terminate()
-                        p.join(1)
+                stop_processes(processes)
                 
                 break
             
@@ -361,11 +384,7 @@ def main():
         logger.info("Keyboard interrupt detected. Initiating graceful shutdown...")
         TERMINATE_SIGNAL = True
         
-        # Gracefully terminate all processes
-        for p in processes:
-            if p and p.is_alive():
-                os.kill(p.pid, signal.SIGTERM)
-                p.join(timeout=5)
+        stop_processes(processes, grace_seconds=5)
                 
         logger.info("Cleanup complete after keyboard interrupt.")
         
@@ -375,21 +394,12 @@ def main():
         traceback.print_exc()
         
         # Terminate any remaining processes
-        for p in processes:
-            if p and p.is_alive():
-                p.terminate()
-                p.join(timeout=1)
+        stop_processes(processes, grace_seconds=1)
     
     finally:
-        # Ensure all processes are properly terminated
-        for p in processes:
-            if p and p.is_alive():
-                logger.warning(f"Force terminating process {p.name}")
-                p.terminate()
-                try:
-                    p.join(timeout=1)
-                except:
-                    pass
+        # Ensure all processes are properly terminated before tearing down the Manager
+        stop_processes(processes, grace_seconds=1)
+        shutdown_manager(manager, shared_data)
     
     logger.info("All processes have completed. Program exiting.")
 

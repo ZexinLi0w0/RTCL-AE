@@ -26,6 +26,7 @@ from avalanche.evaluation.metrics import (
 from avalanche.logging import InteractiveLogger, CSVLogger
 from torch.utils.data import DataLoader, TensorDataset
 from avalanche.benchmarks.utils.data_loader import ReplayDataLoader
+import src.utils.avalanche_compat  # noqa: F401  (silences Avalanche's deprecated ReplayPlugin.update path)
 
 from src.globals import TERMINATE_SIGNAL, CONFIG_UPDATE_REQUESTED
 from src.utils.signal_handlers import request_config_update_handler, signal_handler

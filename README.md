@@ -1,6 +1,43 @@
 # AdaptOCL
 enabling concurrent on-device online continual learning inference and retraining using real-time streaming data
 
+# Quick Start
+
+**Every command in this README is run from the repository root (the directory containing `main.py`), inside the Python environment that has PyTorch + Avalanche installed.** Only the dependency builds in [Installation](#installation) happen in other directories.
+
+## On the provided evaluation board (AGX Orin, everything preinstalled)
+
+```bash
+cd /experiment/zexin/RTCL-AE                       # repository root: run everything from here
+export PATH=/home/zexin/.conda/envs/ocl/bin:$PATH  # the "ocl" conda env (equivalently: conda activate ocl)
+python -c "import torch, avalanche; print(torch.__version__, avalanche.__version__, torch.cuda.is_available())"
+# expected: 2.5.0 0.6.0a True
+```
+
+Datasets are already downloaded. Avalanche reads its dataset directory from `~/.avalanche/config.json` (`"dataset_location": "/experiment/zexin/.avalanche/data"`); the soft-robot data is under `/experiment/.avalanche/data/soft_robot_data_raw/`.
+
+## Fresh Jetson setup
+
+1. Build/install the dependencies as described in [Installation](#installation) (PyTorch, Torchvision and Avalanche are built from source, in any directory outside this repository). `requirements-jetson.txt` pins the versions of the remaining pip packages used on the evaluation board.
+2. `cd` back to the repository root, then download the datasets (`sh download_benchmark.sh`) and apply the Avalanche patches (`export AVALANCHE_ROOT=<path to your avalanche clone>`, then the `cp modified/...` commands below).
+
+## Smoke test (about 1 minute on AGX Orin)
+
+```bash
+python main.py --benchmark split_cifar100 --algorithm replay --global_scheduler_mode adaptocl --eval_bs 16 --enable_double_buffer
+```
+
+A healthy run ends with `All processes have completed. Program exiting.` and exit code 0.
+
+## Long runs
+
+Full sweeps take hours on Jetson. Detach them from the SSH session and keep a log, e.g.:
+
+```bash
+nohup python -u main.py <args> > run.log 2>&1 &
+tail -f run.log
+```
+
 # Prerequisites
 
 - Python                  3.10.12 (JetPack 6.2, L4T 36.4.3)
@@ -85,6 +122,8 @@ conda install cvxopt
 
 # Download Benchmark Datasets
 
+From here on, run all commands from the repository root.
+
 ```bash
 # Download the benchmark datasets
 sh download_benchmark.sh
@@ -93,6 +132,7 @@ sh download_benchmark.sh
 # Specific Change for EndlessCL-Sim semantic segmentation
 
 ```bash
+export AVALANCHE_ROOT=/path/to/avalanche   # the avalanche clone installed with `pip install -e` above
 # copy the specific change for EndlessCL-Sim semantic segmentation to the avalanche-lib
 # warning! this will overwrite the original files. Please backup the original files before running the following commands.
 cp modified/avalanche/evaluation/metrics/*.py $AVALANCHE_ROOT/avalanche/evaluation/metrics/
@@ -174,6 +214,8 @@ python main.py --benchmark "core50" --scenario_core50 "nc" --algorithm "replay" 
 `bash ae_logs/run_fig123.sh` is the driver that runs all Fig. 1–3 stages with skip-on-done; the tegrastats logs land in `ae_logs/fig1/`.
 
 ## Fig. 2: Alternation method and interval
+
+The benchmarks in Fig. 2 are labelled by scale, following Sec. 3 of the paper: **S = SplitCIFAR10, M = CORe50-NC, L = CORe50-NIC**. In `fig2a_alternation_methods.csv` they appear in the `benchmark` column as `split_cifar10` / `core50_nc` / `core50_nic`. Fig. 2(b) uses only L (CORe50-NIC).
 
 Fig. 2(a) compares four alternation policies — DA (`default`), AOCL_basic (`fully_parallel`), TA (`adaptive_time --adaptive_priority_percent 0.5`), and AA (`adaptive_accuracy --adaptive_accuracy_threshold 0.4`) — on SplitCIFAR10, CORe50-NC, and CORe50-NIC, all at `--timeslice 0.1`. Representative command (vary `--global_scheduler_mode` and `--benchmark`):
 
