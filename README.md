@@ -1,5 +1,8 @@
-# AdaptOCL
-enabling concurrent on-device online continual learning inference and retraining using real-time streaming data
+# RTCL
+
+[![RTSS 2026 AE seal: artifact passed the repeatability test](https://img.shields.io/badge/RTSS%202026-Artifact%20Evaluated%20%C2%B7%20Repeatable-brightgreen)](ArtifactEvaluation.md)
+
+Official implementation of RTSS 2026 *Real-Time Continual Learning on Embedded GPUs*.
 
 For reproducing the paper results (artifact evaluation), see [ArtifactEvaluation.md](ArtifactEvaluation.md).
 
